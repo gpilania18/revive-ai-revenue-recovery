@@ -1,4 +1,5 @@
 import express from "express";
+import { registerSimulatorDevRoutes } from "./simulator/dev-routes";
 
 export const app = express();
 
@@ -8,3 +9,5 @@ app.get("/health", (_req, res) => {
     service: "revive-ai-api",
   });
 });
+
+registerSimulatorDevRoutes(app);
