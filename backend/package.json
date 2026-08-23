@@ -7,7 +7,8 @@
     "build": "tsc",
     "start": "node dist/server.js",
     "typecheck": "tsc --noEmit",
-    "test": "tsx --test src/simulator/simulator.test.ts src/db/safe-error.test.ts"
+    "test": "tsx --test src/simulator/simulator.test.ts src/db/safe-error.test.ts",
+    "seed": "tsx src/db/seed-transactions.ts"
   },
   "dependencies": {
     "dotenv": "^17.4.2",
