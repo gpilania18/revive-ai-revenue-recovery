@@ -7,15 +7,17 @@
     "build": "tsc",
     "start": "node dist/server.js",
     "typecheck": "tsc --noEmit",
-    "test": "tsx --test src/simulator/simulator.test.ts src/db/safe-error.test.ts src/recovery/recovery-policy.test.ts",
+    "test": "tsx --test src/simulator/simulator.test.ts src/db/safe-error.test.ts src/db/transaction-repository.test.ts src/recovery/recovery-policy.test.ts src/recovery/revive-strategy.test.ts src/recovery/decision-service.test.ts src/recovery/recovery-service.test.ts",
     "seed": "tsx src/db/seed-transactions.ts"
   },
   "dependencies": {
+    "cors": "^2.8.6",
     "dotenv": "^17.4.2",
     "express": "^5.2.1",
     "mongodb": "^7.5.0"
   },
   "devDependencies": {
+    "@types/cors": "^2.8.19",
     "@types/express": "^5.0.6",
     "@types/node": "^20.19.43",
     "tsx": "^4.23.12",

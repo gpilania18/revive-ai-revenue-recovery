@@ -23,20 +23,43 @@ export function evaluateRecoveryPolicy(
     };
   }
 
-  if (requestedAction === "RETRY_PAYMENT") {
-    if (transaction.retryCount >= transaction.maxRetries) {
-      return {
-        action: "DO_NOTHING",
-        allowed: false,
-        reason: "Retry limit has been exhausted.",
-      };
-    }
+  if (transaction.retryCount >= transaction.maxRetries) {
+    return {
+      action: "DO_NOTHING",
+      allowed: false,
+      reason: "Retry limit has been exhausted.",
+    };
+  }
 
+  /*
+   * Revive may recommend ESCALATE for two different reasons:
+   *
+   * 1. Unknown failure:
+   *    escalation is a valid decision.
+   *
+   * 2. High-value transaction:
+   *    escalation is required because automatic recovery is not allowed.
+   *
+   * Only the second case must return allowed: false.
+   */
+  if (
+    requestedAction === "ESCALATE" &&
+    transaction.amountPaise > AUTOMATION_AMOUNT_CAP_PAISE
+  ) {
+    return {
+      action: "ESCALATE",
+      allowed: false,
+      reason: "High-value transactions require human authorization.",
+    };
+  }
+
+  if (requestedAction === "RETRY_PAYMENT") {
     if (transaction.failureType === "CARD_EXPIRED") {
       return {
         action: "REQUEST_PAYMENT_METHOD_UPDATE",
         allowed: false,
-        reason: "Expired payment credentials cannot be recovered by retrying.",
+        reason:
+          "Expired payment credentials cannot be recovered by retrying.",
       };
     }
 
@@ -44,7 +67,8 @@ export function evaluateRecoveryPolicy(
       return {
         action: "DO_NOTHING",
         allowed: false,
-        reason: "Hard declines must not be retried automatically.",
+        reason:
+          "Hard declines must not be retried automatically.",
       };
     }
 
@@ -52,7 +76,8 @@ export function evaluateRecoveryPolicy(
       return {
         action: "DO_NOTHING",
         allowed: false,
-        reason: "Duplicate payment risk prevents an automatic retry.",
+        reason:
+          "Duplicate payment risk prevents an automatic retry.",
       };
     }
 
@@ -60,25 +85,19 @@ export function evaluateRecoveryPolicy(
       return {
         action: "ESCALATE",
         allowed: false,
-        reason: "High-value transactions require human authorization.",
+        reason:
+          "High-value transactions require human authorization.",
       };
     }
   }
 
   if (requestedAction === "WAIT_AND_RETRY") {
-    if (transaction.retryCount >= transaction.maxRetries) {
-      return {
-        action: "DO_NOTHING",
-        allowed: false,
-        reason: "Retry limit has been exhausted.",
-      };
-    }
-
     if (transaction.amountPaise > AUTOMATION_AMOUNT_CAP_PAISE) {
       return {
         action: "ESCALATE",
         allowed: false,
-        reason: "High-value transactions require human authorization.",
+        reason:
+          "High-value transactions require human authorization.",
       };
     }
   }
@@ -88,9 +107,18 @@ export function evaluateRecoveryPolicy(
       return {
         action: "DO_NOTHING",
         allowed: false,
-        reason: "Payment method update is only required for expired credentials.",
+        reason:
+          "Payment method update is only required for expired credentials.",
       };
     }
+  }
+
+  if (requestedAction === "DO_NOTHING") {
+    return {
+      action: "DO_NOTHING",
+      allowed: true,
+      reason: "No recovery action is required.",
+    };
   }
 
   return {

@@ -1,9 +1,17 @@
 import express from "express";
+import cors from "cors";
 import { registerMongoHealthRoute } from "./db/health-route";
+import { registerTransactionRoutes } from "./db/transaction-route";
+import { registerRecoveryRoutes } from "./recovery/recovery-route";
 import { registerSimulatorDevRoutes } from "./simulator/dev-routes";
 
 export const app = express();
 
+app.use(cors({
+  origin: "http://localhost:3000",
+}));
+
+app.use(express.json());
 app.get("/health", (_req, res) => {
   res.status(200).json({
     status: "ok",
@@ -12,4 +20,6 @@ app.get("/health", (_req, res) => {
 });
 
 registerSimulatorDevRoutes(app);
+registerTransactionRoutes(app);
+registerRecoveryRoutes(app);
 registerMongoHealthRoute(app);

@@ -1,5 +1,11 @@
 import type { Collection, Db } from "mongodb";
 
+import type {
+  RecoveryActionType,
+  SimulationOutcome,
+} from "../simulator/types";
+
+
 import type { TransactionDocument } from "./transactions";
 
 export class TransactionRepository {
@@ -39,6 +45,55 @@ export class TransactionRepository {
     transactionId: string,
   ): Promise<TransactionDocument | null> {
     return this.collection.findOne({ transactionId });
+  }
+
+     async applyRecoveryResult(
+    transactionId: string,
+    action: RecoveryActionType,
+    outcome: SimulationOutcome,
+  ): Promise<TransactionDocument | null> {
+    const isPaymentAction =
+      action === "RETRY_PAYMENT" || action === "WAIT_AND_RETRY";
+
+    const filter = {
+      transactionId,
+      ...(isPaymentAction
+        ? {
+            priorActions: {
+              $not: {
+                $elemMatch: {
+                  $in: ["RETRY_PAYMENT", "WAIT_AND_RETRY"],
+                },
+              },
+            },
+          }
+        : {
+            priorActions: {
+              $not: {
+                $elemMatch: {
+                  $eq: action,
+                },
+              },
+            },
+          }),
+    };
+
+    const update = {
+      $push: {
+        priorActions: action,
+      },
+      $set: {
+        updatedAt: new Date(),
+        ...(outcome === "success"
+          ? { status: "captured" as const }
+          : {}),
+      },
+      ...(isPaymentAction ? { $inc: { retryCount: 1 } } : {}),
+    };
+
+    return this.collection.findOneAndUpdate(filter, update, {
+      returnDocument: "after",
+    });
   }
 
   async insertMany(
