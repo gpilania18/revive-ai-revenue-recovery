@@ -7,7 +7,7 @@
     "build": "tsc",
     "start": "node dist/server.js",
     "typecheck": "tsc --noEmit",
-    "test": "tsx --test src/simulator/simulator.test.ts src/db/safe-error.test.ts",
+    "test": "tsx --test src/simulator/simulator.test.ts src/db/safe-error.test.ts src/recovery/recovery-policy.test.ts",
     "seed": "tsx src/db/seed-transactions.ts"
   },
   "dependencies": {
