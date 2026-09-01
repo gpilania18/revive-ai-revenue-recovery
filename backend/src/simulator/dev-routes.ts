@@ -121,4 +121,53 @@ export function registerSimulatorDevRoutes(app: Express): void {
         : null,
     });
   });
+
+  app.get("/simulator/experiment", (req, res) => {
+    const rawSeed = req.query.seed;
+    const rawSampleSize = req.query.sampleSize;
+    const seed =
+      typeof rawSeed === "string" && rawSeed.length > 0
+        ? Number(rawSeed)
+        : DEFAULT_SEED;
+
+    if (!Number.isInteger(seed)) {
+      res.status(400).json({ error: "seed must be an integer" });
+      return;
+    }
+
+    const allTransactions = generateDataset(seed);
+    const sampleSize =
+      typeof rawSampleSize === "string" && rawSampleSize.length > 0
+        ? Math.min(Math.max(1, Number(rawSampleSize)), allTransactions.length)
+        : allTransactions.length;
+
+    const sample = allTransactions.slice(0, sampleSize);
+
+    const baseline = evaluateStrategy(sample, baselineStrategy);
+    const revive = evaluateStrategy(sample, reviveStrategy);
+
+    const incrementalRevenueRecoveredPaise = incrementalRecoveryPaise(
+      revive.metrics,
+      baseline.metrics,
+    );
+
+    res.status(200).json({
+      seed,
+      sampleSize: sample.length,
+      transactionIds: sample.map((t) => t.id),
+      baseline: baseline.metrics,
+      revive: revive.metrics,
+      comparison: {
+        incrementalRecoveryPaise: incrementalRevenueRecoveredPaise,
+        incrementalRecoveryRate:
+          revive.metrics.recoveryRate - baseline.metrics.recoveryRate,
+        additionalSuccessfulInterventions:
+          revive.metrics.successfulInterventions -
+          baseline.metrics.successfulInterventions,
+      },
+      baselineResults: baseline.results,
+      reviveResults: revive.results,
+      transactions: sample.map(toPublicTransaction),
+    });
+  });
 }
