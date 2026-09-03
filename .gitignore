@@ -1,8 +1,32 @@
+# Dependencies
 node_modules/
+/.pnp
+.pnp.js
+
+# Build outputs
+dist/
 .next/
+out/
+build/
+
+# Vercel
+.vercel
+
+# Environment variables
 .env
 .env.*
+.env*.local
 !.env.example
-dist/
+
+# TypeScript cache
+*.tsbuildinfo
+next-env.d.ts
+
+# Testing
 coverage/
+
+# OS / Editor
 .DS_Store
+*.pem
+*.log
+

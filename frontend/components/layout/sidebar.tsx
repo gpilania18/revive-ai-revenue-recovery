@@ -3,10 +3,12 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useRecovery } from "@/context/recovery-context";
+import { API_URL } from "@/lib/api";
 
 export function Sidebar() {
   const pathname = usePathname();
   const { pendingReviewCount } = useRecovery();
+  const displayHost = API_URL.replace(/^https?:\/\//, "");
 
   const navItems = [
     { name: "Overview", href: "/", icon: <path d="M4 9h4v11H4zm12-9h4v20h-4zM10 4h4v16h-4z" /> },
@@ -106,7 +108,7 @@ export function Sidebar() {
           <div className="h-2 w-2 rounded-full bg-amber-500"></div>
           <span className="text-xs font-medium text-gray-700">API Connected</span>
         </div>
-        <div className="text-xs text-gray-400 pl-4">localhost:4000</div>
+        <div className="text-xs text-gray-400 pl-4 font-mono truncate">{displayHost}</div>
       </div>
     </div>
   );
