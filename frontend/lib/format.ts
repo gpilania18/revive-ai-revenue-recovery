@@ -105,6 +105,29 @@ export function formatFailureType(type: string): string {
 }
 
 /**
+ * AI Failure Classification Formatter
+ */
+const AI_FAILURE_CATEGORY_MAP: Record<string, string> = {
+  TRANSIENT: "Transient",
+  CUSTOMER_ACTION_REQUIRED: "Customer Action Required",
+  TERMINAL: "Terminal",
+  RISK_RELATED: "Risk Related",
+  UNKNOWN: "Unknown",
+};
+
+export function formatAIFailureCategory(category?: string): string {
+  if (!category) return "Unknown";
+  const upper = category.toUpperCase();
+  if (AI_FAILURE_CATEGORY_MAP[upper]) {
+    return AI_FAILURE_CATEGORY_MAP[upper];
+  }
+  return category
+    .split("_")
+    .map((word) => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
+    .join(" ");
+}
+
+/**
  * Format a Status for display.
  */
 export function formatStatusLabel(status: string): string {
@@ -161,6 +184,7 @@ export function formatPaymentMethod(method: string): string {
 const AUDIT_EVENT_MAP: Record<string, string> = {
   PAYMENT_FAILED: "Payment Failed",
   REVIVE_ANALYSIS: "REVIVE Analysis",
+  AI_ANALYSIS: "AI Decision Support",
   SAFETY_CHECK: "Safety Policy Check",
   RECOVERY_ALLOWED: "Recovery Policy Allowed",
   RECOVERY_BLOCKED: "Recovery Policy Blocked",

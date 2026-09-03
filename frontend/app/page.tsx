@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useCallback } from "react";
+import { useState, useCallback, useEffect } from "react";
 import Link from "next/link";
 import { DashboardLayout } from "@/components/layout/dashboard-layout";
 import { MetricCard } from "@/components/ui/metric-card";
@@ -11,7 +11,8 @@ import { LoadingState } from "@/components/ui/loading-state";
 import { ErrorState } from "@/components/ui/error-state";
 import { RecoveryPerformanceChart } from "@/components/charts/recovery-performance-chart";
 import { useRecovery } from "@/context/recovery-context";
-import { formatINR, formatINRSigned, formatPercent, formatPercentDelta, formatActionLabel, formatFailureType } from "@/lib/format";
+import { formatINR, formatINRSigned, formatPercent, formatPercentDelta, formatActionLabel, formatFailureType, formatAIFailureCategory } from "@/lib/format";
+import { getCustomTransactions } from "@/lib/csv-importer";
 
 export default function OverviewPage() {
   const {
@@ -36,10 +37,22 @@ export default function OverviewPage() {
   } = useRecovery();
 
   const [sampleSize, setSampleSize] = useState<number>(50);
+  const [datasetMode, setDatasetMode] = useState<"generated" | "imported">("generated");
+  const [customTxnCount, setCustomTxnCount] = useState<number>(0);
   const [txnInput, setTxnInput] = useState("txn_003");
   const [analyzedId, setAnalyzedId] = useState<string | null>("txn_003");
   const [analysisError, setAnalysisError] = useState<string | null>(null);
   const [batchError, setBatchError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      const custom = getCustomTransactions();
+      setCustomTxnCount(custom.length);
+      if (custom.length > 0 && experiment.datasetSource === "imported") {
+        setDatasetMode("imported");
+      }
+    }
+  }, [experiment.datasetSource]);
 
   // Directly derive active decision and AI analysis from context
   const activeDecision = analyzedId ? getDecision(analyzedId) : null;
@@ -52,7 +65,23 @@ export default function OverviewPage() {
   const handleRunBatch = async () => {
     setBatchError(null);
     try {
-      await runBatchExperiment(sampleSize, 42);
+      if (datasetMode === "imported") {
+        const custom = getCustomTransactions();
+        if (custom.length === 0) {
+          throw new Error("No imported CSV transactions found. Please import transactions via the Transactions page.");
+        }
+        await runBatchExperiment({
+          mode: "imported",
+          transactions: custom,
+          sampleSize: custom.length,
+        });
+      } else {
+        await runBatchExperiment({
+          mode: "generated",
+          sampleSize,
+          seed: 42,
+        });
+      }
     } catch (err: unknown) {
       setBatchError(err instanceof Error ? err.message : "Batch simulation failed");
     }
@@ -130,13 +159,19 @@ export default function OverviewPage() {
               <h2 className="text-lg font-bold tracking-tight">Experiment & Batch Simulation Console</h2>
             </div>
             <p className="text-xs text-slate-300 mt-1">
-              Select a sample size to evaluate the exact same transactions under both Baseline and REVIVE strategies.
+              Select a dataset source to evaluate transactions under both Baseline and REVIVE strategies.
             </p>
           </div>
 
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             <span className="text-xs font-mono px-2.5 py-1 rounded-md bg-slate-800 border border-slate-700 text-slate-300">
-              Seed: 42
+              {isExperimentActive
+                ? experiment.datasetSource === "imported"
+                  ? `Dataset: Imported CSV (${experiment.sampleSize} txns)`
+                  : `Seed: ${experiment.seed ?? 42} (Generated)`
+                : datasetMode === "imported"
+                ? `Dataset: Imported CSV (${customTxnCount} txns)`
+                : "Seed: 42 (Generated)"}
             </span>
             <span
               className={`text-xs font-bold px-3 py-1 rounded-full border ${
@@ -146,7 +181,7 @@ export default function OverviewPage() {
               }`}
             >
               {isExperimentActive
-                ? `ACTIVE: ${experiment.sampleSize} TRANSACTIONS`
+                ? `ACTIVE: ${experiment.sampleSize} TRANSACTIONS (${experiment.datasetSource === "imported" ? "IMPORTED CSV" : "GENERATED"})`
                 : "READY (ZERO STATE)"}
             </span>
           </div>
@@ -155,35 +190,63 @@ export default function OverviewPage() {
         {/* Console Controls */}
         <div className="mt-5 flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-4">
           <div className="flex flex-wrap items-center gap-3">
-            <div className="flex items-center gap-2 bg-slate-800/90 border border-slate-700 rounded-xl px-3.5 py-2">
-              <label htmlFor="sample-size" className="text-xs font-medium text-slate-300 whitespace-nowrap">
-                Sample Size:
-              </label>
-              <select
-                id="sample-size"
-                value={sampleSize}
-                onChange={(e) => setSampleSize(Number(e.target.value))}
-                disabled={isBatchRunning}
-                className="bg-slate-900 border border-slate-600 text-white text-xs font-bold rounded-lg px-2.5 py-1 outline-none focus:ring-1 focus:ring-blue-500 font-mono"
-              >
-                <option value={10}>10 transactions</option>
-                <option value={25}>25 transactions</option>
-                <option value={50}>50 transactions</option>
-                <option value={100}>100 transactions</option>
-                <option value={200}>200 transactions (Full)</option>
-              </select>
-            </div>
+            {/* Dataset Source Toggle */}
+            {customTxnCount > 0 && (
+              <div className="flex items-center gap-2 bg-slate-800/90 border border-slate-700 rounded-xl px-3.5 py-2">
+                <label htmlFor="dataset-mode" className="text-xs font-medium text-slate-300 whitespace-nowrap">
+                  Dataset:
+                </label>
+                <select
+                  id="dataset-mode"
+                  value={datasetMode}
+                  onChange={(e) => setDatasetMode(e.target.value as "generated" | "imported")}
+                  disabled={isBatchRunning}
+                  className="bg-slate-900 border border-slate-600 text-white text-xs font-bold rounded-lg px-2.5 py-1 outline-none focus:ring-1 focus:ring-blue-500 font-mono"
+                >
+                  <option value="generated">Generated Dataset (Seed 42)</option>
+                  <option value="imported">Imported CSV ({customTxnCount} txns)</option>
+                </select>
+              </div>
+            )}
+
+            {datasetMode === "generated" ? (
+              <div className="flex items-center gap-2 bg-slate-800/90 border border-slate-700 rounded-xl px-3.5 py-2">
+                <label htmlFor="sample-size" className="text-xs font-medium text-slate-300 whitespace-nowrap">
+                  Sample Size:
+                </label>
+                <select
+                  id="sample-size"
+                  value={sampleSize}
+                  onChange={(e) => setSampleSize(Number(e.target.value))}
+                  disabled={isBatchRunning}
+                  className="bg-slate-900 border border-slate-600 text-white text-xs font-bold rounded-lg px-2.5 py-1 outline-none focus:ring-1 focus:ring-blue-500 font-mono"
+                >
+                  <option value={10}>10 transactions</option>
+                  <option value={25}>25 transactions</option>
+                  <option value={50}>50 transactions</option>
+                  <option value={100}>100 transactions</option>
+                  <option value={200}>200 transactions (Full)</option>
+                </select>
+              </div>
+            ) : (
+              <div className="flex items-center gap-2 bg-slate-800/90 border border-slate-700 rounded-xl px-3.5 py-2">
+                <span className="text-xs font-medium text-slate-300">Target Sample:</span>
+                <span className="text-xs font-mono font-bold text-indigo-300">
+                  All {customTxnCount} Imported Transactions
+                </span>
+              </div>
+            )}
 
             <button
               onClick={handleRunBatch}
-              disabled={isBatchRunning}
+              disabled={isBatchRunning || (datasetMode === "imported" && customTxnCount === 0)}
               className="inline-flex items-center justify-center gap-2 px-6 py-2.5 bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white font-bold text-sm rounded-xl shadow-lg transition-all"
             >
               {isBatchRunning ? (
                 <>
                   <div className="h-4 w-4 rounded-full border-2 border-white/20 border-t-white animate-spin" />
                   <span>
-                    Simulating {experiment.progress?.current || 0} / {sampleSize}...
+                    Simulating {experiment.progress?.current || 0} / {datasetMode === "imported" ? customTxnCount : sampleSize}...
                   </span>
                 </>
               ) : (
@@ -192,7 +255,11 @@ export default function OverviewPage() {
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z" />
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
                   </svg>
-                  <span>Simulate All ({sampleSize})</span>
+                  <span>
+                    {datasetMode === "imported"
+                      ? `Simulate Imported Batch (${customTxnCount})`
+                      : `Simulate All (${sampleSize})`}
+                  </span>
                 </>
               )}
             </button>
@@ -221,25 +288,29 @@ export default function OverviewPage() {
           label="Revenue Recovered"
           value={formatINR(revive.revenueRecoveredPaise)}
           detail={`Baseline ${formatINR(baseline.revenueRecoveredPaise)}`}
+          tooltip="Total transaction value from successfully recovered payments."
         />
         <MetricCard
           icon={<TrendUpIcon />}
           label="Incremental Recovery"
           value={formatINRSigned(comparison.incrementalRecoveryPaise)}
           detail="vs baseline on same sample"
+          tooltip="Additional revenue recovered compared to baseline strategy."
           emphasis
         />
         <MetricCard
           icon={<PercentIcon />}
-          label="Recovery Rate"
+          label="Revenue Recovery Rate"
           value={formatPercent(revive.recoveryRate)}
           detail={`${formatPercentDelta(comparison.incrementalRecoveryRate)} vs baseline`}
+          tooltip="Recovered revenue divided by total revenue at risk."
         />
         <MetricCard
           icon={<CheckIcon />}
           label="Successful Interventions"
           value={revive.successfulInterventions.toString()}
           detail={`+${comparison.additionalSuccessfulInterventions} additional vs baseline`}
+          tooltip="Count of actual successful recovery outcomes across the evaluated sample."
         />
       </div>
 
@@ -439,6 +510,11 @@ export default function OverviewPage() {
                     <div className="flex items-center gap-1.5">
                       <span className="h-2 w-2 rounded-full bg-indigo-400 animate-pulse" />
                       <span className="text-xs font-bold text-indigo-300">AI Assistant (Decision Support)</span>
+                      {activeAIAnalysis.failureClassification && (
+                        <span className="ml-1.5 px-1.5 py-0.2 rounded text-[10px] font-bold bg-indigo-900/90 text-indigo-200 border border-indigo-700">
+                          {formatAIFailureCategory(activeAIAnalysis.failureClassification.category)}
+                        </span>
+                      )}
                     </div>
                     <span className="text-[10px] font-semibold text-slate-400">Non-authoritative</span>
                   </div>
@@ -470,6 +546,15 @@ export default function OverviewPage() {
                   <p className="text-xs text-slate-300 bg-slate-900/40 p-2 rounded border border-slate-800/60 leading-relaxed">
                     &ldquo;{activeAIAnalysis.reason}&rdquo;
                   </p>
+
+                  {activeAIAnalysis.expectedOutcome && (
+                    <div className="flex items-center justify-between text-[11px] text-slate-400 px-1">
+                      <span>Outcome Est: {activeAIAnalysis.expectedOutcome.summary}</span>
+                      <span className="font-mono text-emerald-400 font-bold">
+                        {formatPercent(activeAIAnalysis.expectedOutcome.successProbability)}
+                      </span>
+                    </div>
+                  )}
                 </div>
               ) : activeAIError ? (
                 <div className="rounded-xl border border-amber-500/40 bg-amber-950/20 p-3 text-xs text-amber-200">

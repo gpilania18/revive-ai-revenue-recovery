@@ -18,6 +18,8 @@ import {
   formatNormalizedOutcome,
   formatDecisionSource,
   formatPercent,
+  formatAIFailureCategory,
+  formatStatusLabel,
 } from "@/lib/format";
 import { useRecovery } from "@/context/recovery-context";
 
@@ -71,7 +73,7 @@ export default function TransactionDetailPage({ params }: { params: { id: string
 
   const handleRequestAI = useCallback(async () => {
     if (!txnId) return;
-    await analyzeTransactionWithAI(txnId);
+    await analyzeTransactionWithAI(txnId, true);
   }, [txnId, analyzeTransactionWithAI]);
 
   if (loading && !currentTxn) {
@@ -97,7 +99,14 @@ export default function TransactionDetailPage({ params }: { params: { id: string
 
   const decision = decisionRes?.decision;
   const effectiveStatus = getEffectiveStatus(currentTxn);
-  const isRecovered = effectiveStatus === "recovered";
+  const isRecovered = effectiveStatus === "recovered" || effectiveStatus === "captured" || effectiveStatus === "authorized";
+  const isResolved =
+    isRecovered ||
+    effectiveStatus === "approved" ||
+    effectiveStatus === "rejected" ||
+    effectiveStatus === "resolved" ||
+    (humanReview && humanReview.status !== "PENDING") ||
+    (decisionRecord && decisionRecord.outcome !== "PENDING");
   const isDuplicate = currentTxn.failureType === "DUPLICATE_PAYMENT";
   const isRetryLimitReached = currentTxn.retryCount >= currentTxn.maxRetries;
   const isHighValue = currentTxn.amountPaise > 5_000_000;
@@ -208,19 +217,101 @@ export default function TransactionDetailPage({ params }: { params: { id: string
         </div>
       )}
 
+      {/* Authoritative Resolution & Execution State Card (if transaction has been resolved) */}
+      {isResolved && (
+        <div className="rounded-2xl border border-emerald-500/40 bg-gradient-to-br from-emerald-950/40 via-slate-900 to-slate-950 p-6 mb-8 text-white shadow-xl">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-4 border-b border-emerald-800/40">
+            <div className="flex items-center gap-2.5">
+              <span className="h-3 w-3 rounded-full bg-emerald-400 animate-pulse" />
+              <div>
+                <h2 className="text-base font-bold tracking-tight text-white flex items-center gap-2">
+                  Authoritative Resolution & Current State
+                  <span className="text-[10px] font-semibold uppercase tracking-wider px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
+                    Current Authoritative State
+                  </span>
+                </h2>
+              </div>
+            </div>
+            <div className="flex items-center gap-2">
+              <StatusBadge status={effectiveStatus} className="text-xs px-3 py-1 font-bold" />
+            </div>
+          </div>
+
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-4 pt-4">
+            <div className="bg-slate-800/80 p-3.5 rounded-xl border border-slate-700">
+              <p className="text-[10px] uppercase tracking-wider text-slate-400 font-semibold">Current Effective Status</p>
+              <p className="text-base font-bold text-emerald-400 mt-1 capitalize">{formatStatusLabel(effectiveStatus)}</p>
+            </div>
+
+            <div className="bg-slate-800/80 p-3.5 rounded-xl border border-slate-700">
+              <p className="text-[10px] uppercase tracking-wider text-slate-400 font-semibold">Human Resolution</p>
+              <p className="text-base font-bold text-white mt-1">
+                {humanReview?.decision
+                  ? formatActionLabel(humanReview.decision)
+                  : decisionRecord?.humanDecision
+                  ? formatActionLabel(decisionRecord.humanDecision)
+                  : "Operator Authorized"}
+              </p>
+            </div>
+
+            <div className="bg-slate-800/80 p-3.5 rounded-xl border border-slate-700">
+              <p className="text-[10px] uppercase tracking-wider text-slate-400 font-semibold">Executed Action</p>
+              <p className="text-base font-bold text-blue-400 mt-1">
+                {formatActionLabel(decisionRecord?.actualAction || humanReview?.decision || "RETRY_PAYMENT")}
+              </p>
+            </div>
+
+            <div className="bg-slate-800/80 p-3.5 rounded-xl border border-slate-700">
+              <p className="text-[10px] uppercase tracking-wider text-slate-400 font-semibold">Actual Outcome</p>
+              <div className="flex items-center gap-1.5 mt-1">
+                <span className="text-base font-bold text-emerald-300">
+                  {formatNormalizedOutcome(decisionRecord?.outcome || (isRecovered ? "SUCCESS" : "RESOLVED"))}
+                </span>
+                {decisionRecord && decisionRecord.recoveredPaise > 0 && (
+                  <span className="text-xs font-mono font-bold text-emerald-400">
+                    ({formatINR(decisionRecord.recoveredPaise)})
+                  </span>
+                )}
+              </div>
+            </div>
+          </div>
+
+          {/* Human Operator Rationale / Notes */}
+          {(humanReview?.note || decisionRecord?.humanReason) && (
+            <div className="mt-4 p-3.5 bg-slate-800/60 rounded-xl border border-slate-700/80 text-xs">
+              <span className="text-[11px] font-semibold text-emerald-300 uppercase tracking-wider block mb-1">
+                Operator Resolution Rationale:
+              </span>
+              <p className="text-slate-200">
+                &ldquo;{humanReview?.note || decisionRecord?.humanReason}&rdquo;
+              </p>
+              {humanReview?.reviewedAt && (
+                <p className="text-[10px] text-slate-400 mt-1">
+                  Resolved at: {formatDate(humanReview.reviewedAt)}
+                </p>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+
       {/* AI Assistant Decision Support Card */}
       <div className="bg-gradient-to-br from-indigo-900 via-slate-900 to-slate-950 rounded-2xl p-6 mb-8 text-white shadow-xl border border-indigo-800/60">
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-4 border-b border-indigo-800/60">
           <div className="flex items-center gap-2.5">
             <span className="flex h-3 w-3 relative">
-              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-indigo-400 opacity-75"></span>
-              <span className="relative inline-flex rounded-full h-3 w-3 bg-indigo-500"></span>
+              <span className={`animate-ping absolute inline-flex h-full w-full rounded-full opacity-75 ${isResolved ? "bg-slate-400" : "bg-indigo-400"}`}></span>
+              <span className={`relative inline-flex rounded-full h-3 w-3 ${isResolved ? "bg-slate-400" : "bg-indigo-500"}`}></span>
             </span>
             <div>
               <h2 className="text-base font-bold tracking-tight text-white flex items-center gap-2">
-                AI Assistant
-                <span className="text-[10px] font-semibold uppercase tracking-wider px-2 py-0.5 rounded-full bg-indigo-500/20 text-indigo-300 border border-indigo-500/30">
-                  Decision Support (Non-authoritative)
+                {isResolved ? "AI Analysis at Time of Escalation" : "AI Assistant"}
+                <span className={`text-[10px] font-semibold uppercase tracking-wider px-2 py-0.5 rounded-full border ${
+                  isResolved
+                    ? "bg-slate-700/60 text-slate-300 border-slate-600"
+                    : "bg-indigo-500/20 text-indigo-300 border-indigo-500/30"
+                }`}>
+                  {isResolved ? "Historical / Advisory" : "Decision Support (Non-authoritative)"}
                 </span>
               </h2>
             </div>
@@ -251,6 +342,7 @@ export default function TransactionDetailPage({ params }: { params: { id: string
 
         {aiAnalysis ? (
           <div className="space-y-4 pt-4">
+            {/* Row 1: Top Metrics */}
             <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
               <div className="bg-slate-800/80 p-3.5 rounded-xl border border-slate-700">
                 <p className="text-[10px] uppercase tracking-wider text-slate-400 font-semibold">AI Recommendation</p>
@@ -258,19 +350,26 @@ export default function TransactionDetailPage({ params }: { params: { id: string
               </div>
 
               <div className="bg-slate-800/80 p-3.5 rounded-xl border border-slate-700">
-                <p className="text-[10px] uppercase tracking-wider text-slate-400 font-semibold">AI Confidence</p>
+                <p className="text-[10px] uppercase tracking-wider text-slate-400 font-semibold">AI Recommendation Confidence</p>
                 <div className="flex items-center gap-2 mt-1">
                   <p className="text-base font-mono font-bold text-indigo-300">{formatPercent(aiAnalysis.confidence)}</p>
-                  <span className="text-[10px] text-slate-400">(Recommendation certainty)</span>
+                  <span className="text-[10px] text-slate-400">(Certainty)</span>
                 </div>
               </div>
 
               <div className="bg-slate-800/80 p-3.5 rounded-xl border border-slate-700">
-                <p className="text-[10px] uppercase tracking-wider text-slate-400 font-semibold">Predicted Recovery Prob.</p>
-                <div className="flex items-center gap-2 mt-1">
-                  <p className="text-base font-mono font-bold text-emerald-300">{formatPercent(aiAnalysis.recoveryProbability)}</p>
-                  <span className="text-[10px] text-slate-400">(Est. success if executed)</span>
-                </div>
+                <p className="text-[10px] uppercase tracking-wider text-slate-400 font-semibold">Recovery Probability</p>
+                {aiAnalysis.failureClassification?.category === "RISK_RELATED" || currentTxn.failureType === "DUPLICATE_PAYMENT" || isDuplicate ? (
+                  <div className="mt-1">
+                    <p className="text-base font-mono font-bold text-slate-400">N/A</p>
+                    <span className="text-[10px] text-amber-400 font-medium block">No safe recovery path</span>
+                  </div>
+                ) : (
+                  <div className="flex items-center gap-2 mt-1">
+                    <p className="text-base font-mono font-bold text-emerald-300">{formatPercent(aiAnalysis.recoveryProbability)}</p>
+                    <span className="text-[10px] text-slate-400">(Est. Success)</span>
+                  </div>
+                )}
               </div>
 
               <div className="bg-slate-800/80 p-3.5 rounded-xl border border-slate-700">
@@ -287,13 +386,33 @@ export default function TransactionDetailPage({ params }: { params: { id: string
               </div>
             </div>
 
-            {/* AI Reasoning */}
-            <div className="bg-slate-800/50 p-4 rounded-xl border border-slate-700/80">
-              <p className="text-xs font-semibold text-indigo-300 uppercase tracking-wider mb-1">Why this recommendation?</p>
-              <p className="text-sm text-slate-200 leading-relaxed">{aiAnalysis.reason}</p>
+            {/* Row 2: Failure Classification */}
+            {aiAnalysis.failureClassification && (
+              <div className="bg-slate-800/70 p-4 rounded-xl border border-slate-700 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                <div className="space-y-1">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="text-xs font-semibold text-indigo-300 uppercase tracking-wider">Failure Classification:</span>
+                    <span className="px-2 py-0.5 rounded text-xs font-bold bg-indigo-900/80 text-indigo-200 border border-indigo-700">
+                      {formatAIFailureCategory(aiAnalysis.failureClassification.category)}
+                    </span>
+                    <span className="text-xs text-slate-400">
+                      · Failure Classification Confidence: <span className="font-mono font-bold text-indigo-300">{formatPercent(aiAnalysis.failureClassification.confidence)}</span>
+                    </span>
+                  </div>
+                  <p className="text-xs text-slate-300">{aiAnalysis.failureClassification.reason}</p>
+                </div>
+              </div>
+            )}
+
+            {/* Row 3: Why This Recommendation & Key Factors */}
+            <div className="bg-slate-800/50 p-4 rounded-xl border border-slate-700/80 space-y-3">
+              <div>
+                <p className="text-xs font-semibold text-indigo-300 uppercase tracking-wider mb-1">Why this recommendation?</p>
+                <p className="text-sm text-slate-200 leading-relaxed">{aiAnalysis.reason}</p>
+              </div>
 
               {aiAnalysis.keyFactors && aiAnalysis.keyFactors.length > 0 && (
-                <div className="mt-3 pt-3 border-t border-slate-700">
+                <div className="pt-3 border-t border-slate-700">
                   <p className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider mb-1.5">Key Factors Analyzed:</p>
                   <ul className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs text-slate-300">
                     {aiAnalysis.keyFactors.map((factor, idx) => (
@@ -305,6 +424,81 @@ export default function TransactionDetailPage({ params }: { params: { id: string
                   </ul>
                 </div>
               )}
+            </div>
+
+            {/* Row 4: Expected Outcome & Human Review Guidance Grid */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              {/* Expected Outcome */}
+              {aiAnalysis.expectedOutcome && (
+                <div className="bg-slate-800/60 p-4 rounded-xl border border-slate-700/80 space-y-1.5">
+                  <div className="flex items-center justify-between">
+                    <p className="text-xs font-semibold text-emerald-300 uppercase tracking-wider">Likely Outcome</p>
+                    {aiAnalysis.failureClassification?.category === "RISK_RELATED" || currentTxn.failureType === "DUPLICATE_PAYMENT" || isDuplicate ? (
+                      <span className="text-xs font-mono font-bold text-amber-400">
+                        N/A (Double Charge Risk)
+                      </span>
+                    ) : (
+                      <span className="text-xs font-mono font-bold text-emerald-300">
+                        {formatPercent(aiAnalysis.expectedOutcome.successProbability)} Est. Success
+                      </span>
+                    )}
+                  </div>
+                  <p className="text-xs text-slate-300 leading-relaxed">
+                    {aiAnalysis.failureClassification?.category === "RISK_RELATED" || currentTxn.failureType === "DUPLICATE_PAYMENT" || isDuplicate
+                      ? "No safe recovery action is available because attempting recovery could result in an unintended double charge."
+                      : aiAnalysis.expectedOutcome.summary}
+                  </p>
+                </div>
+              )}
+
+              {/* Human Review Guidance */}
+              {aiAnalysis.humanAdvice && (
+                <div className="bg-slate-800/60 p-4 rounded-xl border border-slate-700/80 space-y-1.5">
+                  <div className="flex items-center justify-between">
+                    <p className="text-xs font-semibold text-amber-300 uppercase tracking-wider">
+                      {isResolved ? "Original Reviewer Guidance" : "Reviewer Guidance"}
+                    </p>
+                    <span className={`text-[10px] font-bold px-2 py-0.5 rounded ${
+                      isResolved
+                        ? "bg-emerald-900/80 text-emerald-300 border border-emerald-700"
+                        : aiAnalysis.humanAdvice.reviewNeeded
+                        ? "bg-amber-900/80 text-amber-300 border border-amber-700"
+                        : "bg-emerald-900/80 text-emerald-300 border border-emerald-700"
+                    }`}>
+                      {isResolved
+                        ? "Resolved by Operator"
+                        : aiAnalysis.humanAdvice.reviewNeeded
+                        ? "Manual Review Required"
+                        : "Not Currently Required"}
+                    </span>
+                  </div>
+                  <p className="text-xs text-slate-300 leading-relaxed">
+                    {aiAnalysis.humanAdvice.summary}
+                  </p>
+                  {isResolved ? (
+                    <p className="text-[11px] text-emerald-400/90 pt-1 font-medium">
+                      ✓ This case was reviewed and resolved by operations. Manual review is no longer active.
+                    </p>
+                  ) : (
+                    aiAnalysis.humanAdvice.reviewTriggers && aiAnalysis.humanAdvice.reviewTriggers.length > 0 && (
+                      <div className="pt-1.5 flex flex-wrap gap-1">
+                        {aiAnalysis.humanAdvice.reviewTriggers.map((trig, idx) => (
+                          <span key={idx} className="text-[10px] px-1.5 py-0.5 rounded bg-slate-900 text-slate-400 border border-slate-700">
+                            {trig}
+                          </span>
+                        ))}
+                      </div>
+                    )
+                  )}
+                </div>
+              )}
+            </div>
+
+            {/* Subtle Advisory Disclaimer */}
+            <div className="pt-1 text-center">
+              <p className="text-[11px] text-slate-400">
+                AI provides decision support only. REVIVE deterministic policy controls automated recovery.
+              </p>
             </div>
           </div>
         ) : isCurrentAIAnalyzing ? (

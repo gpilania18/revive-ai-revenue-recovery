@@ -2,7 +2,6 @@
 
 import React from "react";
 
-// Helper function to concatenate classes (assuming cn might be missing, standard fallback)
 function cn(...classes: (string | undefined | null | false)[]) {
   return classes.filter(Boolean).join(" ");
 }
@@ -13,22 +12,31 @@ interface MetricCardProps {
   value: string;
   detail: string;
   emphasis?: boolean;
+  tooltip?: string;
 }
 
-export function MetricCard({ icon, label, value, detail, emphasis }: MetricCardProps) {
+export function MetricCard({ icon, label, value, detail, emphasis, tooltip }: MetricCardProps) {
   return (
     <div
+      title={tooltip}
       className={cn(
-        "rounded-xl border shadow-sm p-6 flex flex-col justify-between",
+        "rounded-xl border shadow-sm p-6 flex flex-col justify-between transition-all",
         emphasis
           ? "bg-slate-900 text-white border-slate-800"
           : "bg-white text-gray-900 border-gray-200"
       )}
     >
       <div className="flex items-center justify-between mb-4">
-        <h3 className={cn("text-sm font-medium", emphasis ? "text-slate-300" : "text-gray-500")}>
-          {label}
-        </h3>
+        <div className="flex items-center gap-1.5">
+          <h3 className={cn("text-sm font-medium", emphasis ? "text-slate-300" : "text-gray-500")}>
+            {label}
+          </h3>
+          {tooltip && (
+            <span className={cn("text-[11px] cursor-help opacity-60 hover:opacity-100", emphasis ? "text-slate-400" : "text-gray-400")}>
+              ⓘ
+            </span>
+          )}
+        </div>
         {icon && (
           <div
             className={cn(

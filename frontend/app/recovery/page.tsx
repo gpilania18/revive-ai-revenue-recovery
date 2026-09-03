@@ -119,7 +119,7 @@ export default function RecoveryPage() {
               <h1 className="text-2xl font-bold text-gray-900">Recovery Control Center</h1>
               {isExperimentActive ? (
                 <span className="bg-emerald-100 text-emerald-800 text-xs font-bold px-2.5 py-0.5 rounded-full">
-                  Experiment Active ({experiment.sampleSize} txns)
+                  Experiment Active ({experiment.sampleSize} txns · {experiment.datasetSource === "imported" ? "Imported CSV" : "Generated"})
                 </span>
               ) : (
                 <span className="bg-gray-100 text-gray-600 text-xs font-bold px-2.5 py-0.5 rounded-full">
@@ -140,9 +140,10 @@ export default function RecoveryPage() {
             detail={`+${formatPercent(improvement)} vs baseline`}
           />
           <MetricCard
-            label="Recovery Rate"
+            label="Revenue Recovery Rate"
             value={formatPercent(revive.recoveryRate)}
             detail={`+${(rateDelta * 100).toFixed(1)} pts vs baseline`}
+            tooltip="Recovered revenue divided by total revenue at risk."
             emphasis
           />
           <MetricCard

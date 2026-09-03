@@ -80,6 +80,16 @@ export function fetchExperiment(
   return apiFetch<ExperimentResponse>(`/simulator/experiment${queryString}`);
 }
 
+export function postImportedExperiment(
+  transactions: PublicTransaction[],
+): Promise<ExperimentResponse> {
+  return apiFetch<ExperimentResponse>(`/simulator/experiment`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ transactions }),
+  });
+}
+
 // -- Transaction endpoints (verified in backend/src/db/transaction-route.ts) --
 
 export function fetchTransactionById(

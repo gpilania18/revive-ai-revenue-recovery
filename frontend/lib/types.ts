@@ -73,7 +73,7 @@ export interface EvaluationMetrics {
 
 /** GET /simulator/revive-evaluation response */
 export interface ReviveEvaluation {
-  seed: number;
+  seed: number | null;
   baseline: EvaluationMetrics;
   revive: EvaluationMetrics;
   comparison: {
@@ -150,7 +150,7 @@ export interface HealthResponse {
 export type ExperimentStatus = "IDLE" | "RUNNING" | "COMPLETED" | "ERROR";
 
 export interface ExperimentResponse {
-  seed: number;
+  seed: number | null;
   sampleSize: number;
   transactionIds: string[];
   baseline: EvaluationMetrics;
@@ -163,6 +163,7 @@ export interface ExperimentResponse {
   baselineResults: SimulationResult[];
   reviveResults: SimulationResult[];
   transactions: PublicTransaction[];
+  datasetSource?: "generated" | "imported";
 }
 
 /** Human Review / Escalation Types */
@@ -255,6 +256,14 @@ export interface DecisionRecord {
   riskScore?: "LOW" | "MEDIUM" | "HIGH";
   aiExplanation?: string;
   aiKeyFactors?: string[];
+  aiFailureCategory?: AIFailureCategory;
+  aiFailureConfidence?: number;
+  aiFailureReason?: string;
+  aiExpectedOutcome?: string;
+  aiExpectedSuccessProbability?: number;
+  aiHumanReviewNeeded?: boolean;
+  aiHumanAdvice?: string;
+  aiHumanReviewTriggers?: string[];
 }
 
 export interface OutcomeFeedbackMetrics {
@@ -270,13 +279,40 @@ export interface OutcomeFeedbackMetrics {
 /** AI Intelligence Assistant Types */
 export type AIRiskScore = "LOW" | "MEDIUM" | "HIGH";
 
+export type AIFailureCategory =
+  | "TRANSIENT"
+  | "CUSTOMER_ACTION_REQUIRED"
+  | "TERMINAL"
+  | "RISK_RELATED"
+  | "UNKNOWN";
+
+export interface AIFailureClassification {
+  category: AIFailureCategory;
+  confidence: number;
+  reason: string;
+}
+
+export interface AIExpectedOutcome {
+  summary: string;
+  successProbability: number;
+}
+
+export interface AIHumanAdvice {
+  reviewNeeded: boolean;
+  summary: string;
+  reviewTriggers: string[];
+}
+
 export interface AIAssistantDecision {
   recommendedAction: RecoveryActionType;
   confidence: number;
   recoveryProbability: number;
   riskScore: AIRiskScore;
+  failureClassification: AIFailureClassification;
   reason: string;
   keyFactors: string[];
+  expectedOutcome: AIExpectedOutcome;
+  humanAdvice: AIHumanAdvice;
   evaluatedAt: string;
 }
 

@@ -18,6 +18,7 @@ import {
   formatAuditActor,
   formatNormalizedOutcome,
   formatPercent,
+  formatAIFailureCategory,
 } from "@/lib/format";
 import type {
   EscalatedTransactionItem,
@@ -441,6 +442,7 @@ export default function HumanReviewPage() {
 
                 {aiAnalysis ? (
                   <div className="space-y-3 pt-1">
+                    {/* Top Metrics */}
                     <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
                       <div className="bg-white p-2.5 rounded-lg border border-indigo-100 shadow-2xs">
                         <p className="text-[10px] uppercase font-semibold text-gray-500">Suggested Action</p>
@@ -465,12 +467,31 @@ export default function HumanReviewPage() {
                       </div>
                     </div>
 
-                    <div className="bg-white/80 p-3 rounded-lg border border-indigo-100 text-xs">
-                      <p className="text-[11px] font-semibold text-indigo-900 mb-0.5">Why?</p>
-                      <p className="text-gray-700 leading-relaxed">{aiAnalysis.reason}</p>
+                    {/* Failure Classification */}
+                    {aiAnalysis.failureClassification && (
+                      <div className="bg-white p-2.5 rounded-lg border border-indigo-100 text-xs space-y-1">
+                        <div className="flex items-center gap-2">
+                          <span className="text-[10px] font-semibold text-indigo-900 uppercase tracking-wider">Classification:</span>
+                          <span className="px-1.5 py-0.2 rounded text-[10px] font-bold bg-indigo-100 text-indigo-800 border border-indigo-200">
+                            {formatAIFailureCategory(aiAnalysis.failureClassification.category)}
+                          </span>
+                          <span className="text-[10px] font-mono text-gray-500">
+                            ({formatPercent(aiAnalysis.failureClassification.confidence)})
+                          </span>
+                        </div>
+                        <p className="text-[11px] text-gray-600">{aiAnalysis.failureClassification.reason}</p>
+                      </div>
+                    )}
+
+                    {/* Why & Key Evidence */}
+                    <div className="bg-white/90 p-3 rounded-lg border border-indigo-100 text-xs space-y-2">
+                      <div>
+                        <p className="text-[11px] font-semibold text-indigo-900 mb-0.5">Why it thinks this happened:</p>
+                        <p className="text-gray-700 leading-relaxed text-xs">{aiAnalysis.reason}</p>
+                      </div>
                       {aiAnalysis.keyFactors && aiAnalysis.keyFactors.length > 0 && (
-                        <div className="mt-2 pt-2 border-t border-indigo-50">
-                          <p className="text-[10px] font-semibold text-gray-500 uppercase tracking-wider mb-1">Key Factors:</p>
+                        <div className="pt-2 border-t border-indigo-50">
+                          <p className="text-[10px] font-semibold text-gray-500 uppercase tracking-wider mb-1">Key Evidence:</p>
                           <ul className="grid grid-cols-1 sm:grid-cols-2 gap-1 text-[11px] text-gray-600">
                             {aiAnalysis.keyFactors.map((kf, idx) => (
                               <li key={idx} className="flex items-center gap-1.5">
@@ -479,6 +500,44 @@ export default function HumanReviewPage() {
                               </li>
                             ))}
                           </ul>
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Expected Outcome & Reviewer Guidance */}
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs">
+                      {aiAnalysis.expectedOutcome && (
+                        <div className="bg-emerald-50/60 p-2.5 rounded-lg border border-emerald-100">
+                          <div className="flex items-center justify-between mb-0.5">
+                            <span className="text-[10px] font-bold uppercase text-emerald-800">Expected Outcome</span>
+                            <span className="text-[10px] font-mono font-bold text-emerald-700">
+                              {formatPercent(aiAnalysis.expectedOutcome.successProbability)}
+                            </span>
+                          </div>
+                          <p className="text-[11px] text-emerald-950 leading-normal">{aiAnalysis.expectedOutcome.summary}</p>
+                        </div>
+                      )}
+
+                      {aiAnalysis.humanAdvice && (
+                        <div className="bg-amber-50/60 p-2.5 rounded-lg border border-amber-100">
+                          <div className="flex items-center justify-between mb-0.5">
+                            <span className="text-[10px] font-bold uppercase text-amber-800">Reviewer Advice</span>
+                            <span className={`text-[9px] font-bold px-1.5 py-0.2 rounded ${
+                              aiAnalysis.humanAdvice.reviewNeeded ? "bg-amber-200 text-amber-900" : "bg-emerald-100 text-emerald-800"
+                            }`}>
+                              {aiAnalysis.humanAdvice.reviewNeeded ? "Review Needed" : "Optional"}
+                            </span>
+                          </div>
+                          <p className="text-[11px] text-amber-950 leading-normal">{aiAnalysis.humanAdvice.summary}</p>
+                          {aiAnalysis.humanAdvice.reviewTriggers && aiAnalysis.humanAdvice.reviewTriggers.length > 0 && (
+                            <div className="mt-1 flex flex-wrap gap-1">
+                              {aiAnalysis.humanAdvice.reviewTriggers.map((trig, idx) => (
+                                <span key={idx} className="text-[9px] px-1 py-0.2 rounded bg-amber-100/80 text-amber-800 border border-amber-200">
+                                  {trig}
+                                </span>
+                              ))}
+                            </div>
+                          )}
                         </div>
                       )}
                     </div>

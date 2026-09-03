@@ -1,6 +1,6 @@
 "use client";
 
-import React, { createContext, useContext, useState, useEffect, useCallback, useMemo } from "react";
+import React, { createContext, useContext, useState, useEffect, useCallback, useMemo, useRef } from "react";
 import type {
   PublicTransaction,
   ReviveEvaluation,
@@ -19,10 +19,12 @@ import type {
   DecisionRecord,
   OutcomeFeedbackMetrics,
   AIAssistantDecision,
+  ExperimentResponse,
 } from "@/lib/types";
 import {
   fetchSimulatorTransactions,
   fetchExperiment,
+  postImportedExperiment,
   postRecoveryAction,
   fetchAIAnalysis,
 } from "@/lib/api";
@@ -46,7 +48,8 @@ export interface SimulationEvent {
 export interface ExperimentState {
   status: ExperimentStatus;
   sampleSize: number;
-  seed: number;
+  seed: number | null;
+  datasetSource?: "generated" | "imported";
   transactionIds: string[];
   baseline: EvaluationMetrics;
   revive: EvaluationMetrics;
@@ -76,6 +79,7 @@ const ZERO_EXPERIMENT: ExperimentState = {
   status: "IDLE",
   sampleSize: 0,
   seed: 42,
+  datasetSource: "generated",
   transactionIds: [],
   baseline: { ...ZERO_METRICS },
   revive: { ...ZERO_METRICS },
@@ -102,7 +106,17 @@ interface RecoveryContextType {
   // Experiment State
   experiment: ExperimentState;
   isExperimentActive: boolean;
-  runBatchExperiment: (sampleSize: number, seed?: number) => Promise<void>;
+  runBatchExperiment: (
+    options?:
+      | number
+      | {
+          mode?: "generated" | "imported";
+          sampleSize?: number;
+          seed?: number;
+          transactions?: PublicTransaction[];
+        },
+    legacySeed?: number
+  ) => Promise<void>;
   resetExperiment: () => void;
 
   // Human Review & Escalations
@@ -132,7 +146,7 @@ interface RecoveryContextType {
   aiAnalyses: Record<string, AIAssistantDecision>;
   aiErrors: Record<string, string>;
   isAnalyzingAI: Record<string, boolean>;
-  analyzeTransactionWithAI: (transactionId: string) => Promise<AIAssistantDecision | null>;
+  analyzeTransactionWithAI: (transactionId: string, forceRefresh?: boolean) => Promise<AIAssistantDecision | null>;
   getAIAnalysis: (transactionId: string) => AIAssistantDecision | undefined;
   getAIError: (transactionId: string) => string | undefined;
 
@@ -167,6 +181,7 @@ export function RecoveryProvider({ children }: { children: React.ReactNode }) {
   const [aiAnalyses, setAiAnalyses] = useState<Record<string, AIAssistantDecision>>({});
   const [aiErrors, setAiErrors] = useState<Record<string, string>>({});
   const [isAnalyzingAI, setIsAnalyzingAI] = useState<Record<string, boolean>>({});
+  const pendingAIRequestsRef = useRef<Map<string, Promise<AIAssistantDecision | null>>>(new Map());
   const [experiment, setExperiment] = useState<ExperimentState>(ZERO_EXPERIMENT);
   const [activeSimulationResult, setActiveSimulationResult] = useState<SimulationResult | null>(null);
   const [isSimulating, setIsSimulating] = useState<Record<string, boolean>>({});
@@ -248,18 +263,175 @@ export function RecoveryProvider({ children }: { children: React.ReactNode }) {
     return list;
   }, [baseTransactions, mutatedTransactions]);
 
+  // Helper to get transaction by ID (defined early so metric derivation can access it)
+  const getTransaction = useCallback(
+    (id: string): PublicTransaction | undefined => {
+      if (!id) return undefined;
+      return transactions.find((t) => t.id.toLowerCase() === id.trim().toLowerCase());
+    },
+    [transactions]
+  );
+
   const isExperimentActive = experiment.status === "COMPLETED" || experiment.status === "RUNNING";
+
+  // Authoritative dynamic calculation of REVIVE metrics across unique evaluated transactions
+  const dynamicReviveMetrics: EvaluationMetrics = useMemo(() => {
+    if (!isExperimentActive && Object.keys(mutatedTransactions).length === 0 && Object.keys(decisionRecords).length === 0) {
+      return { ...ZERO_METRICS };
+    }
+
+    if (isExperimentActive) {
+      const activeIds = experiment.transactionIds;
+      let totalRevenueAtRiskPaise = 0;
+      let revenueRecoveredPaise = 0;
+      let successfulInterventions = 0;
+      let blockedActions = 0;
+      let escalationCount = 0;
+      let duplicatePreventionCount = 0;
+
+      activeIds.forEach((id) => {
+        const txn = getTransaction(id);
+        if (!txn) return;
+
+        totalRevenueAtRiskPaise += txn.amountPaise;
+
+        // Authoritative recovery check:
+        // A transaction is recovered IF AND ONLY IF it has an authoritative successful recovery outcome:
+        // 1. A decisionRecord with outcome === "SUCCESS"
+        // 2. OR a captured status resulting from an executed recovery mutation (mutatedTransactions)
+        const hasSuccessfulDecision = decisionRecords[id]?.outcome === "SUCCESS";
+        const hasSuccessfulMutation = mutatedTransactions[id]?.status === "captured";
+        const isRecovered = hasSuccessfulDecision || hasSuccessfulMutation;
+
+        if (isRecovered) {
+          revenueRecoveredPaise += txn.amountPaise;
+          successfulInterventions += 1;
+        }
+
+        const isBlocked = decisionRecords[id] ? !decisionRecords[id].decisionAllowed : false;
+        if (isBlocked) {
+          blockedActions += 1;
+        }
+
+        const isEscalated =
+          (decisionRecords[id]?.escalated ?? false) ||
+          (humanReviews[id] !== undefined) ||
+          txn.amountPaise > 5_000_000;
+        if (isEscalated) {
+          escalationCount += 1;
+        }
+
+        if (txn.failureType === "DUPLICATE_PAYMENT") {
+          duplicatePreventionCount += 1;
+        }
+      });
+
+      const recoveryRate = totalRevenueAtRiskPaise > 0 ? revenueRecoveredPaise / totalRevenueAtRiskPaise : 0;
+
+      return {
+        transactionCount: activeIds.length,
+        totalRevenueAtRiskPaise,
+        revenueRecoveredPaise,
+        recoveryRate,
+        successfulInterventions,
+        blockedActions,
+        escalationCount,
+        duplicatePreventionCount,
+      };
+    }
+
+    // Single transaction simulation mode (outside batch experiment)
+    const simulatedTxnIds = Array.from(
+      new Set([
+        ...Object.keys(mutatedTransactions),
+        ...Object.keys(decisionRecords),
+        ...Object.keys(humanReviews),
+      ])
+    );
+
+    if (simulatedTxnIds.length === 0) {
+      return { ...ZERO_METRICS };
+    }
+
+    let totalRevenueAtRiskPaise = 0;
+    let revenueRecoveredPaise = 0;
+    let successfulInterventions = 0;
+    let blockedActions = 0;
+    let escalationCount = 0;
+    let duplicatePreventionCount = 0;
+
+    simulatedTxnIds.forEach((id) => {
+      const txn = getTransaction(id);
+      if (!txn) return;
+
+      totalRevenueAtRiskPaise += txn.amountPaise;
+
+      const hasSuccessfulDecision = decisionRecords[id]?.outcome === "SUCCESS";
+      const hasSuccessfulMutation = mutatedTransactions[id]?.status === "captured";
+      const isRecovered = hasSuccessfulDecision || hasSuccessfulMutation;
+
+      if (isRecovered) {
+        revenueRecoveredPaise += txn.amountPaise;
+        successfulInterventions += 1;
+      }
+
+      const isBlocked = decisionRecords[id] ? !decisionRecords[id].decisionAllowed : false;
+      if (isBlocked) {
+        blockedActions += 1;
+      }
+
+      const isEscalated =
+        (decisionRecords[id]?.escalated ?? false) ||
+        (humanReviews[id] !== undefined) ||
+        txn.amountPaise > 5_000_000;
+      if (isEscalated) {
+        escalationCount += 1;
+      }
+
+      if (txn.failureType === "DUPLICATE_PAYMENT") {
+        duplicatePreventionCount += 1;
+      }
+    });
+
+    const recoveryRate = totalRevenueAtRiskPaise > 0 ? revenueRecoveredPaise / totalRevenueAtRiskPaise : 0;
+
+    return {
+      transactionCount: simulatedTxnIds.length,
+      totalRevenueAtRiskPaise,
+      revenueRecoveredPaise,
+      recoveryRate,
+      successfulInterventions,
+      blockedActions,
+      escalationCount,
+      duplicatePreventionCount,
+    };
+  }, [
+    isExperimentActive,
+    experiment.transactionIds,
+    mutatedTransactions,
+    decisionRecords,
+    humanReviews,
+    getTransaction,
+  ]);
+
+  const dynamicComparison = useMemo(() => {
+    return {
+      incrementalRecoveryPaise: dynamicReviveMetrics.revenueRecoveredPaise - experiment.baseline.revenueRecoveredPaise,
+      incrementalRecoveryRate: dynamicReviveMetrics.recoveryRate - experiment.baseline.recoveryRate,
+      additionalSuccessfulInterventions: dynamicReviveMetrics.successfulInterventions - experiment.baseline.successfulInterventions,
+    };
+  }, [dynamicReviveMetrics, experiment.baseline]);
 
   // Evaluation metrics strictly reflecting current experiment (or ZERO when reset)
   const evaluation: ReviveEvaluation | null = useMemo(() => {
     return {
       seed: experiment.seed,
       baseline: experiment.baseline,
-      revive: experiment.revive,
-      comparison: experiment.comparison,
+      revive: dynamicReviveMetrics,
+      comparison: dynamicComparison,
       samplePublicTransaction: transactions[0] || null,
     };
-  }, [experiment, transactions]);
+  }, [experiment.seed, experiment.baseline, dynamicReviveMetrics, dynamicComparison, transactions]);
 
   const isTransactionInExperiment = useCallback(
     (id: string): boolean => {
@@ -267,15 +439,6 @@ export function RecoveryProvider({ children }: { children: React.ReactNode }) {
       return experiment.transactionIds.includes(id);
     },
     [experiment.transactionIds, isExperimentActive]
-  );
-
-  // Helper to get transaction by ID
-  const getTransaction = useCallback(
-    (id: string): PublicTransaction | undefined => {
-      if (!id) return undefined;
-      return transactions.find((t) => t.id.toLowerCase() === id.trim().toLowerCase());
-    },
-    [transactions]
   );
 
   // Helper to evaluate decision for any transaction
@@ -467,118 +630,190 @@ export function RecoveryProvider({ children }: { children: React.ReactNode }) {
     [aiErrors]
   );
 
-  // Trigger AI Assistant Analysis for any transaction
+  // Trigger AI Assistant Analysis for any transaction (with Cache-First & In-Flight Deduplication)
   const analyzeTransactionWithAI = useCallback(
-    async (transactionId: string): Promise<AIAssistantDecision | null> => {
+    async (transactionId: string, forceRefresh = false): Promise<AIAssistantDecision | null> => {
       const cleanId = transactionId.trim();
-      const targetTxn = getTransaction(cleanId);
+      const targetTxn = baseTransactions.find((t) => t.id.toLowerCase() === cleanId.toLowerCase()) || getTransaction(cleanId);
       if (!targetTxn) return null;
 
-      setIsAnalyzingAI((prev) => ({ ...prev, [cleanId]: true }));
-
-      try {
-        const result = await fetchAIAnalysis(cleanId, targetTxn).catch((err) => {
-          console.warn("[RecoveryContext] AI Analysis fetch failed:", err);
-          return {
-            available: false as const,
-            decision: undefined,
-            analysis: undefined,
-            error: err instanceof Error ? err.message : "AI Assistant unavailable",
-            evaluatedAt: new Date().toISOString(),
-          };
-        });
-
-        const aiDec = result.decision || result.analysis;
-
-        if (result.available && aiDec) {
-          const nextAnalyses = {
-            ...aiAnalyses,
-            [cleanId]: aiDec,
-          };
-
-          const nextErrors = { ...aiErrors };
-          delete nextErrors[cleanId];
-          setAiErrors(nextErrors);
-
-          // Record AI Analysis Audit Event only on true validated success
-          const aiAuditEvent: AuditEvent = {
-            id: `aud_${Date.now()}_ai`,
-            transactionId: cleanId,
-            timestamp: aiDec.evaluatedAt || new Date().toISOString(),
-            eventType: "AI_ANALYSIS",
-            actor: "REVIVE",
-            action: aiDec.recommendedAction,
-            reason: aiDec.reason,
-            metadata: {
-              confidence: aiDec.confidence,
-              recoveryProbability: aiDec.recoveryProbability,
-              riskScore: aiDec.riskScore,
-              keyFactors: aiDec.keyFactors,
-            },
-          };
-
-          const nextAudit = [aiAuditEvent, ...auditEvents];
-
-          // Update Decision Record with AI predictions
-          const existingDec = decisionRecords[cleanId];
-          const nextDec: DecisionRecord = existingDec
-            ? {
-                ...existingDec,
-                aiRecommendedAction: aiDec.recommendedAction,
-                aiConfidence: aiDec.confidence,
-                recoveryProbability: aiDec.recoveryProbability,
-                riskScore: aiDec.riskScore,
-                aiExplanation: aiDec.reason,
-                aiKeyFactors: aiDec.keyFactors,
-              }
-            : {
-                transactionId: cleanId,
-                recommendedAction: evaluateReviveStrategy(targetTxn),
-                actualAction: evaluateReviveStrategy(targetTxn),
-                decisionSource: "RULE_BASED_REVIVE",
-                decisionReason: "AI Assisted Evaluation",
-                decisionAllowed: evaluateRecoveryPolicy(targetTxn, evaluateReviveStrategy(targetTxn)).allowed,
-                escalated: targetTxn.amountPaise > 5_000_000,
-                isHumanOverride: false,
-                outcome: "PENDING",
-                recoveredPaise: 0,
-                timestamp: new Date().toISOString(),
-                aiRecommendedAction: aiDec.recommendedAction,
-                aiConfidence: aiDec.confidence,
-                recoveryProbability: aiDec.recoveryProbability,
-                riskScore: aiDec.riskScore,
-                aiExplanation: aiDec.reason,
-                aiKeyFactors: aiDec.keyFactors,
-              };
-
-          const nextDecisions = {
-            ...decisionRecords,
-            [cleanId]: nextDec,
-          };
-
-          setAiAnalyses(nextAnalyses);
-          setAuditEvents(nextAudit);
-          setDecisionRecords(nextDecisions);
-
-          if (typeof window !== "undefined") {
-            localStorage.setItem(STORAGE_KEY_AI_ANALYSES, JSON.stringify(nextAnalyses));
-            localStorage.setItem(STORAGE_KEY_AUDIT_EVENTS, JSON.stringify(nextAudit));
-            localStorage.setItem(STORAGE_KEY_DECISION_RECORDS, JSON.stringify(nextDecisions));
-          }
-
-          return aiDec;
+      // 1. Cache-First Optimization: return existing completed analysis immediately if available
+      if (!forceRefresh) {
+        const existingAnalysis = aiAnalyses[cleanId];
+        if (existingAnalysis) {
+          return existingAnalysis;
         }
 
-        // Set human-readable error state
-        const errMessage = result.error || "AI Assistant is unavailable. Deterministic REVIVE engine remains active.";
-        setAiErrors((prev) => ({
-          ...prev,
-          [cleanId]: errMessage,
-        }));
-        return null;
-      } finally {
-        setIsAnalyzingAI((prev) => ({ ...prev, [cleanId]: false }));
+        // Also check if decisionRecord has existing valid AI fields
+        const existingRecord = decisionRecords[cleanId];
+        if (existingRecord?.aiConfidence !== undefined && existingRecord?.aiRecommendedAction) {
+          const reconstructedDecision: AIAssistantDecision = {
+            recommendedAction: existingRecord.aiRecommendedAction,
+            confidence: existingRecord.aiConfidence,
+            recoveryProbability: existingRecord.recoveryProbability ?? 0,
+            riskScore: existingRecord.riskScore ?? "LOW",
+            failureClassification: {
+              category: existingRecord.aiFailureCategory ?? "UNKNOWN",
+              confidence: existingRecord.aiFailureConfidence ?? existingRecord.aiConfidence,
+              reason: existingRecord.aiFailureReason ?? existingRecord.aiExplanation ?? "Historical analysis",
+            },
+            reason: existingRecord.aiExplanation ?? "Historical AI recommendation",
+            keyFactors: existingRecord.aiKeyFactors ?? [],
+            expectedOutcome: {
+              summary: existingRecord.aiExpectedOutcome ?? "Historical expected outcome",
+              successProbability: existingRecord.aiExpectedSuccessProbability ?? existingRecord.recoveryProbability ?? 0,
+            },
+            humanAdvice: {
+              reviewNeeded: existingRecord.aiHumanReviewNeeded ?? false,
+              summary: existingRecord.aiHumanAdvice ?? "Historical reviewer advice",
+              reviewTriggers: existingRecord.aiHumanReviewTriggers ?? [],
+            },
+            evaluatedAt: existingRecord.timestamp,
+          };
+          return reconstructedDecision;
+        }
+
+        // 2. In-Flight Deduplication: check if request is already in progress
+        const inFlight = pendingAIRequestsRef.current.get(cleanId);
+        if (inFlight) {
+          return inFlight;
+        }
       }
+
+      // 3. Create execution promise and register in pending map
+      const requestPromise = (async () => {
+        setIsAnalyzingAI((prev) => ({ ...prev, [cleanId]: true }));
+
+        try {
+          const result = await fetchAIAnalysis(cleanId, targetTxn).catch((err) => {
+            console.warn("[RecoveryContext] AI Analysis fetch failed:", err);
+            return {
+              available: false as const,
+              decision: undefined,
+              analysis: undefined,
+              error: err instanceof Error ? err.message : "AI Assistant unavailable",
+              evaluatedAt: new Date().toISOString(),
+            };
+          });
+
+          const aiDec = result.decision || result.analysis;
+
+          if (result.available && aiDec) {
+            const nextAnalyses = {
+              ...aiAnalyses,
+              [cleanId]: aiDec,
+            };
+
+            const nextErrors = { ...aiErrors };
+            delete nextErrors[cleanId];
+            setAiErrors(nextErrors);
+
+            // Record AI Analysis Audit Event only on true validated success
+            const aiAuditEvent: AuditEvent = {
+              id: `aud_${Date.now()}_ai`,
+              transactionId: cleanId,
+              timestamp: aiDec.evaluatedAt || new Date().toISOString(),
+              eventType: "AI_ANALYSIS",
+              actor: "REVIVE",
+              action: aiDec.recommendedAction,
+              reason: aiDec.reason,
+              metadata: {
+                recommendedAction: aiDec.recommendedAction,
+                confidence: aiDec.confidence,
+                recoveryProbability: aiDec.recoveryProbability,
+                riskScore: aiDec.riskScore,
+                failureClassification: aiDec.failureClassification,
+                expectedOutcome: aiDec.expectedOutcome,
+                humanReviewNeeded: aiDec.humanAdvice?.reviewNeeded,
+                humanAdvice: aiDec.humanAdvice?.summary,
+                reviewTriggers: aiDec.humanAdvice?.reviewTriggers,
+                keyFactors: aiDec.keyFactors,
+              },
+            };
+
+            const nextAudit = [aiAuditEvent, ...auditEvents];
+
+            // Update Decision Record with rich AI predictions & reviewer guidance
+            const existingDec = decisionRecords[cleanId];
+            const nextDec: DecisionRecord = existingDec
+              ? {
+                  ...existingDec,
+                  aiRecommendedAction: aiDec.recommendedAction,
+                  aiConfidence: aiDec.confidence,
+                  recoveryProbability: aiDec.recoveryProbability,
+                  riskScore: aiDec.riskScore,
+                  aiExplanation: aiDec.reason,
+                  aiKeyFactors: aiDec.keyFactors,
+                  aiFailureCategory: aiDec.failureClassification?.category,
+                  aiFailureConfidence: aiDec.failureClassification?.confidence,
+                  aiFailureReason: aiDec.failureClassification?.reason,
+                  aiExpectedOutcome: aiDec.expectedOutcome?.summary,
+                  aiExpectedSuccessProbability: aiDec.expectedOutcome?.successProbability,
+                  aiHumanReviewNeeded: aiDec.humanAdvice?.reviewNeeded,
+                  aiHumanAdvice: aiDec.humanAdvice?.summary,
+                  aiHumanReviewTriggers: aiDec.humanAdvice?.reviewTriggers,
+                }
+              : {
+                  transactionId: cleanId,
+                  recommendedAction: evaluateReviveStrategy(targetTxn),
+                  actualAction: evaluateReviveStrategy(targetTxn),
+                  decisionSource: "RULE_BASED_REVIVE",
+                  decisionReason: "AI Assisted Evaluation",
+                  decisionAllowed: evaluateRecoveryPolicy(targetTxn, evaluateReviveStrategy(targetTxn)).allowed,
+                  escalated: targetTxn.amountPaise > 5_000_000,
+                  isHumanOverride: false,
+                  outcome: "PENDING",
+                  recoveredPaise: 0,
+                  timestamp: new Date().toISOString(),
+                  aiRecommendedAction: aiDec.recommendedAction,
+                  aiConfidence: aiDec.confidence,
+                  recoveryProbability: aiDec.recoveryProbability,
+                  riskScore: aiDec.riskScore,
+                  aiExplanation: aiDec.reason,
+                  aiKeyFactors: aiDec.keyFactors,
+                  aiFailureCategory: aiDec.failureClassification?.category,
+                  aiFailureConfidence: aiDec.failureClassification?.confidence,
+                  aiFailureReason: aiDec.failureClassification?.reason,
+                  aiExpectedOutcome: aiDec.expectedOutcome?.summary,
+                  aiExpectedSuccessProbability: aiDec.expectedOutcome?.successProbability,
+                  aiHumanReviewNeeded: aiDec.humanAdvice?.reviewNeeded,
+                  aiHumanAdvice: aiDec.humanAdvice?.summary,
+                  aiHumanReviewTriggers: aiDec.humanAdvice?.reviewTriggers,
+                };
+
+            const nextDecisions = {
+              ...decisionRecords,
+              [cleanId]: nextDec,
+            };
+
+            setAiAnalyses(nextAnalyses);
+            setAuditEvents(nextAudit);
+            setDecisionRecords(nextDecisions);
+
+            if (typeof window !== "undefined") {
+              localStorage.setItem(STORAGE_KEY_AI_ANALYSES, JSON.stringify(nextAnalyses));
+              localStorage.setItem(STORAGE_KEY_AUDIT_EVENTS, JSON.stringify(nextAudit));
+              localStorage.setItem(STORAGE_KEY_DECISION_RECORDS, JSON.stringify(nextDecisions));
+            }
+
+            return aiDec;
+          }
+
+          // Set human-readable error state
+          const errMessage = result.error || "AI Assistant is unavailable. Deterministic REVIVE engine remains active.";
+          setAiErrors((prev) => ({
+            ...prev,
+            [cleanId]: errMessage,
+          }));
+          return null;
+        } finally {
+          setIsAnalyzingAI((prev) => ({ ...prev, [cleanId]: false }));
+          pendingAIRequestsRef.current.delete(cleanId);
+        }
+      })();
+
+      pendingAIRequestsRef.current.set(cleanId, requestPromise);
+      return requestPromise;
     },
     [getTransaction, aiAnalyses, aiErrors, auditEvents, decisionRecords]
   );
@@ -1125,24 +1360,66 @@ export function RecoveryProvider({ children }: { children: React.ReactNode }) {
 
   // Run Batch Experiment with structured Decision Auditing & Outcome Feedback Records
   const runBatchExperiment = useCallback(
-    async (sampleSize: number, seed = 42) => {
+    async (
+      options?:
+        | number
+        | {
+            mode?: "generated" | "imported";
+            sampleSize?: number;
+            seed?: number;
+            transactions?: PublicTransaction[];
+          },
+      legacySeed = 42
+    ) => {
+      let mode: "generated" | "imported" = "generated";
+      let sampleSize = 50;
+      let seed: number | null = 42;
+      let customList: PublicTransaction[] | undefined;
+
+      if (typeof options === "number") {
+        sampleSize = options;
+        seed = legacySeed;
+        mode = "generated";
+      } else if (options && typeof options === "object") {
+        mode = options.mode || "generated";
+        sampleSize =
+          options.sampleSize ??
+          (mode === "imported"
+            ? options.transactions?.length || getCustomTransactions().length || 10
+            : 50);
+        seed = mode === "imported" ? null : options.seed ?? 42;
+        customList = options.transactions;
+      }
+
       setExperiment((prev) => ({
         ...prev,
         status: "RUNNING",
         sampleSize,
         seed,
+        datasetSource: mode,
         progress: { current: 0, total: sampleSize },
       }));
 
       try {
-        const expData = await fetchExperiment(sampleSize, seed);
+        let expData: ExperimentResponse;
+        if (mode === "imported") {
+          const rawCustom = customList || getCustomTransactions();
+          const targetTxns =
+            sampleSize && sampleSize < rawCustom.length
+              ? rawCustom.slice(0, sampleSize)
+              : rawCustom;
+          expData = await postImportedExperiment(targetTxns);
+        } else {
+          expData = await fetchExperiment(sampleSize, seed ?? 42);
+        }
 
-        const stepCount = Math.min(10, sampleSize);
+        const actualSampleSize = expData.sampleSize || sampleSize;
+        const stepCount = Math.min(10, actualSampleSize);
         for (let i = 1; i <= stepCount; i++) {
-          const simulatedProgress = Math.round((i / stepCount) * sampleSize);
+          const simulatedProgress = Math.round((i / stepCount) * actualSampleSize);
           setExperiment((prev) => ({
             ...prev,
-            progress: { current: simulatedProgress, total: sampleSize },
+            progress: { current: simulatedProgress, total: actualSampleSize },
           }));
           await new Promise((r) => setTimeout(r, 40));
         }
@@ -1154,7 +1431,10 @@ export function RecoveryProvider({ children }: { children: React.ReactNode }) {
         const now = new Date().toISOString();
 
         expData.reviveResults.forEach((res, idx) => {
-          const txn = expData.transactions.find((t) => t.id === res.transactionId) || baseTransactions.find((t) => t.id === res.transactionId);
+          const txn =
+            expData.transactions.find((t) => t.id === res.transactionId) ||
+            transactions.find((t) => t.id === res.transactionId) ||
+            baseTransactions.find((t) => t.id === res.transactionId);
           if (!txn) return;
 
           const isPaymentAction = res.action === "RETRY_PAYMENT" || res.action === "WAIT_AND_RETRY";
@@ -1261,7 +1541,14 @@ export function RecoveryProvider({ children }: { children: React.ReactNode }) {
             decisionAllowed: res.outcome !== "blocked",
             escalated: res.outcome === "escalated" || txn.amountPaise > 5_000_000,
             isHumanOverride: false,
-            outcome: res.outcome === "success" ? "SUCCESS" : (res.outcome === "escalated" ? "ESCALATED" : (res.outcome === "blocked" ? "BLOCKED" : "FAILED")),
+            outcome:
+              res.outcome === "success"
+                ? "SUCCESS"
+                : res.outcome === "escalated"
+                ? "ESCALATED"
+                : res.outcome === "blocked"
+                ? "BLOCKED"
+                : "FAILED",
             recoveredPaise: res.recoveredPaise,
             timestamp: now,
           };
@@ -1271,6 +1558,7 @@ export function RecoveryProvider({ children }: { children: React.ReactNode }) {
           status: "COMPLETED",
           sampleSize: expData.sampleSize,
           seed: expData.seed,
+          datasetSource: expData.datasetSource || mode,
           transactionIds: expData.transactionIds,
           baseline: expData.baseline,
           revive: expData.revive,
@@ -1303,7 +1591,7 @@ export function RecoveryProvider({ children }: { children: React.ReactNode }) {
         throw err;
       }
     },
-    [baseTransactions]
+    [baseTransactions, transactions]
   );
 
   const getTransactionEvents = useCallback(
@@ -1316,6 +1604,7 @@ export function RecoveryProvider({ children }: { children: React.ReactNode }) {
 
   // Synchronous and complete Reset back to ZERO
   const resetExperiment = useCallback(() => {
+    pendingAIRequestsRef.current.clear();
     setMutatedTransactions({});
     setSimulationEvents([]);
     setHumanReviews({});
@@ -1343,8 +1632,8 @@ export function RecoveryProvider({ children }: { children: React.ReactNode }) {
         transactions,
         evaluation,
         baseline: experiment.baseline,
-        revive: experiment.revive,
-        comparison: experiment.comparison,
+        revive: dynamicReviveMetrics,
+        comparison: dynamicComparison,
         loading,
         error,
         simulationEvents,
