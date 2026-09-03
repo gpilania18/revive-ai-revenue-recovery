@@ -47,6 +47,11 @@ export function registerAIRoutes(app: Express): void {
       // Gather deterministic REVIVE recommendation & policy checks
       const ruleRecommendation = reviveStrategy(txn);
       const policyDecision = evaluateRecoveryPolicy(txn, ruleRecommendation);
+      const isHighValue = txn.amountPaise > 5_000_000;
+      const isDuplicateRisk = txn.failureType === "DUPLICATE_PAYMENT";
+      const isRetryExhausted = txn.retryCount >= txn.maxRetries;
+      const isUnknown = txn.failureType === "UNKNOWN_FAILURE";
+      const requiresHumanReview = isHighValue || !policyDecision.allowed || isUnknown || isDuplicateRisk || ruleRecommendation === "ESCALATE";
 
       const context: AITransactionContext = {
         transaction: {
@@ -71,9 +76,10 @@ export function registerAIRoutes(app: Express): void {
           ruleRecommendation,
           policyAllowed: policyDecision.allowed,
           policyReason: policyDecision.reason,
-          isHighValue: txn.amountPaise > 5_000_000,
-          isDuplicateRisk: txn.failureType === "DUPLICATE_PAYMENT",
-          isRetryExhausted: txn.retryCount >= txn.maxRetries,
+          isHighValue,
+          isDuplicateRisk,
+          isRetryExhausted,
+          requiresHumanReview,
         },
       };
 

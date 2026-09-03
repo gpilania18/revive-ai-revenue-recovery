@@ -3,11 +3,14 @@ import type { Express } from "express";
 import { baselineStrategy } from "./baseline";
 import { DEFAULT_SEED } from "./constants";
 import {
+  evaluateResults,
   evaluateStrategy,
   incrementalRecoveryPaise,
 } from "./evaluate";
 import { generateDataset } from "./generate-dataset";
+import { simulateRecoveryAction } from "./payment-simulator";
 import { toPublicTransaction } from "./public-transaction";
+import type { PublicTransaction } from "./types";
 import { reviveStrategy } from "../recovery/revive-strategy";
 
 export function registerSimulatorDevRoutes(app: Express): void {
@@ -168,6 +171,54 @@ export function registerSimulatorDevRoutes(app: Express): void {
       baselineResults: baseline.results,
       reviveResults: revive.results,
       transactions: sample.map(toPublicTransaction),
+      datasetSource: "generated",
+    });
+  });
+
+  app.post("/simulator/experiment", (req, res) => {
+    const rawTransactions = req.body?.transactions;
+    if (!Array.isArray(rawTransactions) || rawTransactions.length === 0) {
+      res.status(400).json({ error: "transactions array is required and must not be empty" });
+      return;
+    }
+
+    const publicTransactions = rawTransactions as PublicTransaction[];
+    const baselineResults = publicTransactions.map((t) => {
+      const action = baselineStrategy(t);
+      return simulateRecoveryAction(t, action);
+    });
+
+    const reviveResults = publicTransactions.map((t) => {
+      const action = reviveStrategy(t);
+      return simulateRecoveryAction(t, action);
+    });
+
+    const baselineMetrics = evaluateResults(publicTransactions as any, baselineResults);
+    const reviveMetrics = evaluateResults(publicTransactions as any, reviveResults);
+
+    const incrementalRevenueRecoveredPaise = incrementalRecoveryPaise(
+      reviveMetrics,
+      baselineMetrics,
+    );
+
+    res.status(200).json({
+      seed: null,
+      sampleSize: publicTransactions.length,
+      transactionIds: publicTransactions.map((t) => t.id),
+      baseline: baselineMetrics,
+      revive: reviveMetrics,
+      comparison: {
+        incrementalRecoveryPaise: incrementalRevenueRecoveredPaise,
+        incrementalRecoveryRate:
+          reviveMetrics.recoveryRate - baselineMetrics.recoveryRate,
+        additionalSuccessfulInterventions:
+          reviveMetrics.successfulInterventions -
+          baselineMetrics.successfulInterventions,
+      },
+      baselineResults,
+      reviveResults,
+      transactions: publicTransactions,
+      datasetSource: "imported",
     });
   });
 }

@@ -289,4 +289,88 @@ describe("evaluation calculations", () => {
     assert.equal(result.outcome, "blocked");
     assert.equal(result.recoveredPaise, 0);
   });
+
+  it("evaluates custom imported transactions deterministically", () => {
+    const now = "2026-08-01T00:00:00.000Z";
+    const imported: PublicTransaction[] = [
+      {
+        id: "txn_201",
+        merchantId: "merchant_test",
+        customerId: "cust_001",
+        amountPaise: 49900,
+        currency: "INR",
+        paymentMethod: "UPI",
+        status: "failed",
+        failureType: "TEMPORARY_ISSUER_FAILURE",
+        retryCount: 0,
+        maxRetries: 3,
+        createdAt: now,
+        lastAttemptAt: now,
+        customer: {
+          segment: "consumer",
+          previousSuccessfulPayments: 2,
+          previousFailedPayments: 1,
+          lifetimeValuePaise: 99800,
+          previousRecoveryCount: 0,
+          lastPaymentAt: now,
+        },
+      },
+      {
+        id: "txn_206",
+        merchantId: "merchant_test",
+        customerId: "cust_006",
+        amountPaise: 7500000,
+        currency: "INR",
+        paymentMethod: "UPI",
+        status: "failed",
+        failureType: "TEMPORARY_ISSUER_FAILURE",
+        retryCount: 0,
+        maxRetries: 3,
+        createdAt: now,
+        lastAttemptAt: now,
+        customer: {
+          segment: "enterprise",
+          previousSuccessfulPayments: 10,
+          previousFailedPayments: 0,
+          lifetimeValuePaise: 150000000,
+          previousRecoveryCount: 1,
+          lastPaymentAt: now,
+        },
+      },
+      {
+        id: "txn_207",
+        merchantId: "merchant_test",
+        customerId: "cust_007",
+        amountPaise: 49900,
+        currency: "INR",
+        paymentMethod: "UPI",
+        status: "failed",
+        failureType: "DUPLICATE_PAYMENT",
+        retryCount: 0,
+        maxRetries: 3,
+        createdAt: now,
+        lastAttemptAt: now,
+        customer: {
+          segment: "consumer",
+          previousSuccessfulPayments: 1,
+          previousFailedPayments: 1,
+          lifetimeValuePaise: 49900,
+          previousRecoveryCount: 0,
+          lastPaymentAt: now,
+        },
+      },
+    ];
+
+    const baselineResults = imported.map((t) => simulateRecoveryAction(t, baselineStrategy(t)));
+    const reviveResults = imported.map((t) => {
+      const action = t.amountPaise > AUTOMATION_AMOUNT_CAP_PAISE ? "ESCALATE" : (t.failureType === "DUPLICATE_PAYMENT" ? "DO_NOTHING" : "RETRY_PAYMENT");
+      return simulateRecoveryAction(t, action);
+    });
+
+    const metrics = evaluateResults(imported as any, reviveResults);
+    assert.equal(metrics.transactionCount, 3);
+    assert.equal(metrics.revenueRecoveredPaise, 49900); // Only txn_201 recovered
+    assert.equal(metrics.successfulInterventions, 1);
+    assert.equal(metrics.escalationCount, 1); // txn_206 escalated
+  });
 });

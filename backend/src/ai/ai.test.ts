@@ -4,14 +4,28 @@ import { validateAIDecision } from "./ai-schema";
 import { AIService } from "./ai-service";
 import type { AITransactionContext } from "./ai-types";
 
-test("AI schema validation: accepts valid structured decision", () => {
+test("AI schema validation: accepts rich valid structured decision", () => {
   const validPayload = {
     recommendedAction: "WAIT_AND_RETRY",
     confidence: 0.88,
     recoveryProbability: 0.76,
     riskScore: "LOW",
-    reason: "Temporary issuer failure with remaining retry capacity.",
+    failureClassification: {
+      category: "TRANSIENT",
+      confidence: 0.85,
+      reason: "Temporary issuer failure with remaining retry capacity.",
+    },
+    reason: "Temporary issuer decline with remaining retry capacity.",
     keyFactors: ["Temporary issuer decline", "No duplicate risk", "Retry capacity available"],
+    expectedOutcome: {
+      summary: "High likelihood of capture after a short wait window.",
+      successProbability: 0.76,
+    },
+    humanAdvice: {
+      reviewNeeded: false,
+      summary: "Manual intervention is not currently required.",
+      reviewTriggers: [],
+    },
   };
 
   const res = validateAIDecision(validPayload);
@@ -20,7 +34,92 @@ test("AI schema validation: accepts valid structured decision", () => {
   assert.equal(res.decision?.confidence, 0.88);
   assert.equal(res.decision?.recoveryProbability, 0.76);
   assert.equal(res.decision?.riskScore, "LOW");
+  assert.equal(res.decision?.failureClassification.category, "TRANSIENT");
+  assert.equal(res.decision?.failureClassification.confidence, 0.85);
+  assert.equal(res.decision?.expectedOutcome.successProbability, 0.76);
+  assert.equal(res.decision?.humanAdvice.reviewNeeded, false);
   assert.equal(res.decision?.keyFactors.length, 3);
+});
+
+test("AI Authority Enforcement: overrides executable action to DO_NOTHING when policyAllowed is false", () => {
+  const hallucinatedPayload = {
+    recommendedAction: "RETRY_PAYMENT",
+    confidence: 0.9,
+    recoveryProbability: 0.75,
+    riskScore: "LOW",
+    reason: "Attempting retry.",
+    keyFactors: ["Signal 1"],
+  };
+
+  const reviveContext: AITransactionContext["reviveContext"] = {
+    ruleRecommendation: "DO_NOTHING",
+    policyAllowed: false,
+    policyReason: "Retry limit exhausted",
+    isHighValue: false,
+    isDuplicateRisk: false,
+    isRetryExhausted: true,
+    requiresHumanReview: true,
+  };
+
+  const res = validateAIDecision(hallucinatedPayload, reviveContext);
+  assert.equal(res.valid, true);
+  // Code-level safety must coerce to DO_NOTHING and enforce human review
+  assert.equal(res.decision?.recommendedAction, "DO_NOTHING");
+  assert.equal(res.decision?.humanAdvice.reviewNeeded, true);
+  assert.match(res.decision?.reason || "", /REVIVE safety policy/);
+});
+
+test("AI Authority Enforcement: overrides executable action to ESCALATE when high-value policy blocks recovery", () => {
+  const hallucinatedPayload = {
+    recommendedAction: "RETRY_PAYMENT",
+    confidence: 0.9,
+    recoveryProbability: 0.8,
+    riskScore: "HIGH",
+    reason: "Customer is high value.",
+    keyFactors: ["Large ticket size"],
+  };
+
+  const reviveContext: AITransactionContext["reviveContext"] = {
+    ruleRecommendation: "ESCALATE",
+    policyAllowed: false,
+    policyReason: "High-value transaction exceeds automated threshold",
+    isHighValue: true,
+    isDuplicateRisk: false,
+    isRetryExhausted: false,
+    requiresHumanReview: true,
+  };
+
+  const res = validateAIDecision(hallucinatedPayload, reviveContext);
+  assert.equal(res.valid, true);
+  assert.equal(res.decision?.recommendedAction, "ESCALATE");
+  assert.equal(res.decision?.humanAdvice.reviewNeeded, true);
+  assert.match(res.decision?.reason || "", /REVIVE safety policy/);
+});
+
+test("AI Authority Enforcement: blocks retries when duplicate risk is present", () => {
+  const retryPayload = {
+    recommendedAction: "RETRY_PAYMENT",
+    confidence: 0.85,
+    recoveryProbability: 0.6,
+    riskScore: "HIGH",
+    reason: "Retrying payment.",
+    keyFactors: ["Duplicate flag present"],
+  };
+
+  const reviveContext: AITransactionContext["reviveContext"] = {
+    ruleRecommendation: "DO_NOTHING",
+    policyAllowed: false,
+    policyReason: "Duplicate payment prevention",
+    isHighValue: false,
+    isDuplicateRisk: true,
+    isRetryExhausted: false,
+    requiresHumanReview: true,
+  };
+
+  const res = validateAIDecision(retryPayload, reviveContext);
+  assert.equal(res.valid, true);
+  assert.equal(res.decision?.recommendedAction, "DO_NOTHING");
+  assert.equal(res.decision?.humanAdvice.reviewNeeded, true);
 });
 
 test("AI schema validation: rejects invalid action", () => {
@@ -103,10 +202,10 @@ test("AI service fallback: returns safe unavailable response when API key is mis
       isHighValue: false,
       isDuplicateRisk: false,
       isRetryExhausted: false,
+      requiresHumanReview: false,
     },
   };
 
-  // If no API key is set in environment, should return available: false gracefully
   if (!service.isConfigured()) {
     const res = await service.analyzeTransaction(context);
     assert.equal(res.available, false);
