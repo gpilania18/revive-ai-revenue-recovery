@@ -1,7 +1,3 @@
-import dotenv from "dotenv";
-
-dotenv.config();
-
 export function getMongoConfig(): { uri: string; dbName: string } {
   const uri = process.env.MONGODB_URI;
   const dbName = process.env.DB_NAME || process.env.MONGODB_DB_NAME;

@@ -1,10 +1,8 @@
-import dotenv from "dotenv";
 import type { AITransactionContext, AIAnalysisResponse, AIDecision } from "./ai-types";
 import { validateAIDecision } from "./ai-schema";
 
 export class AIService {
   private getConfig() {
-    dotenv.config({ override: true });
     const apiKey = process.env.AI_PROVIDER_API_KEY || process.env.OPENAI_API_KEY || process.env.GEMINI_API_KEY;
     const model = process.env.AI_MODEL || "gpt-4o-mini";
     const baseUrl = (process.env.AI_PROVIDER_BASE_URL || "https://api.openai.com/v1").replace(/\/+$/, "");
