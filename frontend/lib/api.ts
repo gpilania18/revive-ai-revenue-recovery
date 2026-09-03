@@ -17,8 +17,14 @@ import type {
   AIAnalysisResult,
 } from "./types";
 
-const API_URL =
-  process.env.NEXT_PUBLIC_API_URL || "http://localhost:4000";
+const rawApiUrl =
+  process.env.NEXT_PUBLIC_API_URL !== undefined && process.env.NEXT_PUBLIC_API_URL.length > 0
+    ? process.env.NEXT_PUBLIC_API_URL
+    : process.env.NODE_ENV === "production"
+    ? "/api"
+    : "http://localhost:4000";
+
+const API_URL = rawApiUrl.replace(/\/+$/, "");
 
 /** Generic fetch wrapper with error handling */
 async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {

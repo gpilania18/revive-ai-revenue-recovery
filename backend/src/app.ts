@@ -41,6 +41,17 @@ app.use(
 );
 
 app.use(express.json());
+
+// Seamless prefix normalization for both /api/* (Vercel routed) and direct /* (local dev) requests
+app.use((req, _res, next) => {
+  if (req.url.startsWith("/api/")) {
+    req.url = req.url.slice(4);
+  } else if (req.url === "/api") {
+    req.url = "/";
+  }
+  next();
+});
+
 app.get("/health", (_req, res) => {
   res.status(200).json({
     status: "ok",
