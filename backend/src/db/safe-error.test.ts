@@ -5,10 +5,10 @@ import { publicMongoErrorMessage, stripMongoSecrets } from "./safe-error";
 describe("MongoDB safe errors", () => {
   it("redacts connection strings from text", () => {
     const leaked =
-      "query srv localhost failed mongodb+srv://user:secret-password@cluster.example.net/app";
+      "query srv localhost failed mongodb+srv://test-user:test-password@example.invalid/app";
     const redacted = stripMongoSecrets(leaked);
 
-    assert.equal(redacted.includes("secret-password"), false);
+    assert.equal(redacted.includes("test-password"), false);
     assert.equal(redacted.includes("mongodb+srv://"), false);
     assert.equal(redacted.includes("[redacted]"), true);
   });
