@@ -64,3 +64,10 @@ registerTransactionRoutes(app);
 registerRecoveryRoutes(app);
 registerMongoHealthRoute(app);
 registerAIRoutes(app);
+
+// Final global JSON error-handling middleware
+app.use((err: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
+  console.error("[Express Error Handler]:", err);
+  const message = err instanceof Error ? err.message : "Internal server error";
+  res.status(500).json({ error: message });
+});
